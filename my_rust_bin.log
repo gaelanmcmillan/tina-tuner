@@ -1,0 +1,5 @@
+22:47:30 [INFO] KeyEvent { code: Char('1'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }
+22:47:30 [INFO] KeyEvent { code: Char('5'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }
+22:47:30 [INFO] KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }
+22:47:32 [INFO] KeyEvent { code: Char('0'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }
+22:47:33 [INFO] KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }

@@ -37,3 +37,7 @@ pressed ctrl+D to exit
 -50c              D              +50c
   |---o----------(-)--------------|
 ```
+
+# resources
+
+- (Autocorrelation Visualization)[https://www.youtube.com/watch?v=NMjBUaeI-wY]

@@ -6,4 +6,6 @@ edition = "2021"
 [dependencies]
 cpal = "0.15.3"
 crossterm = "0.28.1"
+log = "0.4.22"
 ringbuf = "0.4.4"
+simplelog = "0.12.2"
