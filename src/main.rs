@@ -4,11 +4,11 @@ use std::process::exit;
 use std::thread;
 use std::time::Duration;
 
-use cpal::SupportedBufferSize;
 use cpal::{
     traits::{DeviceTrait, HostTrait},
     Device,
 };
+use cpal::{BufferSize, SupportedBufferSize};
 use cpal::{SampleRate, StreamConfig};
 use crossterm::cursor::{self, MoveTo, Show};
 use crossterm::event::{self, KeyCode, KeyModifiers};
@@ -23,6 +23,8 @@ use crossterm::{
     ExecutableCommand,
 };
 use ringbuf::traits::{Consumer, Producer, Split};
+
+const SAMPLE_RATE: SampleRate = SampleRate(48_000);
 
 fn choose_device(ctx: &mut TuiContext, device_options: &Vec<Device>) -> std::io::Result<Device> {
     let prompt = "please select an audio input device".to_owned();
@@ -139,8 +141,7 @@ impl TuiContext {
     }
 }
 
-fn choose_channel(ctx: &mut TuiContext, chosen_device: &Device) -> std::io::Result<usize> {
-    const SAMPLE_RATE: SampleRate = SampleRate(48_000);
+fn choose_channel(ctx: &mut TuiContext, chosen_device: &Device) -> std::io::Result<(usize, u16)> {
     let config_range_48k = chosen_device
         .supported_input_configs()
         .unwrap()
@@ -163,7 +164,7 @@ fn choose_channel(ctx: &mut TuiContext, chosen_device: &Device) -> std::io::Resu
     let stream_config = StreamConfig {
         channels: max_channels,
         sample_rate: SAMPLE_RATE,
-        buffer_size: cpal::BufferSize::Fixed(buffer_size),
+        buffer_size: BufferSize::Fixed(buffer_size),
     };
 
     let sample_buffer_size = buffer_size as usize * max_channels as usize;
@@ -251,7 +252,7 @@ fn choose_channel(ctx: &mut TuiContext, chosen_device: &Device) -> std::io::Resu
         }
     };
 
-    Ok(choice)
+    Ok((choice, max_channels))
 }
 
 /// Be a good citizen and undo our terminal modifications.
@@ -286,12 +287,51 @@ fn main() -> std::io::Result<()> {
 
     stdout().execute(SavePosition)?;
 
-    let chosen_channel = choose_channel(&mut ctx, &chosen_device)?;
+    let (chosen_channel, total_channel_count) = choose_channel(&mut ctx, &chosen_device)?;
 
     execute!(stdout(), RestorePosition, Clear(FromCursorDown))?;
     report("selected channel: ");
     stdout().execute(Print(format!("{}", chosen_channel + 1) + "\n"))?;
 
+    // DO TUNING NOW PLEASE
+    run_tuner(chosen_device, chosen_channel, total_channel_count);
+
     cleanup();
+    Ok(())
+}
+
+fn run_tuner(
+    chosen_device: Device,
+    chosen_channel: usize,
+    total_channel_count: u16,
+) -> std::io::Result<()> {
+    const BUFFER_SIZE: usize = 512;
+
+    let stream_config = StreamConfig {
+        channels: total_channel_count,
+        sample_rate: SAMPLE_RATE,
+        buffer_size: BufferSize::Fixed(512),
+    };
+
+    let rb = ringbuf::HeapRb::<f32>::new(BUFFER_SIZE);
+    let (mut tx, mut rx) = rb.split();
+
+    let input_stream = chosen_device
+        .build_input_stream(
+            &stream_config,
+            move |data: &[f32], _| {
+                let mut buf = [0.; BUFFER_SIZE];
+                for i in 0..total_channel_count as usize {
+                    for j in 0..BUFFER_SIZE {
+                        buf[j] = data[j * total_channel_count as usize + i];
+                        tx.push_slice(&buf);
+                    }
+                }
+            },
+            move |err| {},
+            None,
+        )
+        .unwrap();
+
     Ok(())
 }
