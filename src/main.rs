@@ -11,7 +11,7 @@ use cpal::{
 };
 use cpal::{SampleRate, StreamConfig};
 use crossterm::cursor::{self, MoveTo, Show};
-use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, KeyCode, KeyModifiers};
 use crossterm::style::{PrintStyledContent, Stylize};
 use crossterm::terminal;
 use crossterm::terminal::ClearType::FromCursorDown;
@@ -114,6 +114,7 @@ impl TuiContext {
                         if let Ok(idx) = as_str.parse::<usize>() {
                             if idx < options.len() {
                                 disable_raw_mode()?;
+                                cleanup();
                                 self.user_err_msg.clear();
                                 return Ok(Some(idx));
                             } else {
@@ -136,44 +137,6 @@ impl TuiContext {
         stdout().execute(MoveTo(0, top_row))?;
         Ok(None)
     }
-}
-
-fn main() -> std::io::Result<()> {
-    stdout().execute(Clear(crossterm::terminal::ClearType::FromCursorDown))?;
-    stdout().execute(Hide)?.execute(SavePosition)?;
-    let mut ctx = TuiContext {
-        user_input: vec![],
-        user_err_msg: String::new(),
-    };
-
-    report("-: tina tuner v1.0 :-\n");
-
-    let host = cpal::default_host();
-    let devices = host
-        .input_devices()
-        .expect("there was a problem during audio device detection");
-    let device_options: Vec<_> = devices
-        .into_iter()
-        .filter(|d| d.default_input_config().is_ok())
-        .collect();
-
-    let chosen_device: Device = choose_device(&mut ctx, &device_options)?;
-
-    execute!(
-        stdout(),
-        RestorePosition,
-        Clear(crossterm::terminal::ClearType::FromCursorDown),
-        PrintStyledContent("selected device: ".grey()),
-        Print(chosen_device.name().unwrap() + "\n")
-    )?;
-
-    let chosen_channel = choose_channel(&mut ctx, &chosen_device)?;
-    report("selected channel: ");
-    stdout().execute(Print(format!("{}", chosen_channel + 1)))?;
-
-    thread::sleep(Duration::from_millis(30));
-
-    Ok(())
 }
 
 fn choose_channel(ctx: &mut TuiContext, chosen_device: &Device) -> std::io::Result<usize> {
@@ -277,8 +240,7 @@ fn choose_channel(ctx: &mut TuiContext, chosen_device: &Device) -> std::io::Resu
             let meter_string: String = meter.iter().collect();
 
             options[chan] = format!(
-                "- ({:01x}) channel #{} — |{meter_string} | {:.1} (max: {:.1})\n",
-                chan,
+                "channel #{} — |{meter_string} | {:.1} (max: {:.1})",
                 chan + 1,
                 db_by_chan[chan],
                 max_db_by_chan[chan]
@@ -290,4 +252,46 @@ fn choose_channel(ctx: &mut TuiContext, chosen_device: &Device) -> std::io::Resu
     };
 
     Ok(choice)
+}
+
+/// Be a good citizen and undo our terminal modifications.
+fn cleanup() {
+    stdout().execute(Show).unwrap();
+}
+
+fn main() -> std::io::Result<()> {
+    stdout().execute(Clear(crossterm::terminal::ClearType::FromCursorDown))?;
+    let mut ctx = TuiContext {
+        user_input: vec![],
+        user_err_msg: String::new(),
+    };
+
+    report("-: tina tuner v1.0 :-\n");
+    stdout().execute(Hide)?.execute(SavePosition)?;
+
+    let host = cpal::default_host();
+    let devices = host
+        .input_devices()
+        .expect("there was a problem during audio device detection");
+    let device_options: Vec<_> = devices
+        .into_iter()
+        .filter(|d| d.default_input_config().is_ok())
+        .collect();
+
+    let chosen_device: Device = choose_device(&mut ctx, &device_options)?;
+
+    execute!(stdout(), RestorePosition, Clear(FromCursorDown))?;
+    report("selected device: ");
+    execute!(stdout(), Print(chosen_device.name().unwrap() + "\n"))?;
+
+    stdout().execute(SavePosition)?;
+
+    let chosen_channel = choose_channel(&mut ctx, &chosen_device)?;
+
+    execute!(stdout(), RestorePosition, Clear(FromCursorDown))?;
+    report("selected channel: ");
+    stdout().execute(Print(format!("{}", chosen_channel + 1) + "\n"))?;
+
+    cleanup();
+    Ok(())
 }
