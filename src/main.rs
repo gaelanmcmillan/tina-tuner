@@ -1,4 +1,5 @@
 use core::f32;
+use std::fs::File;
 use std::io::{stdin, stdout, Write};
 use std::process::exit;
 use std::thread;
@@ -22,7 +23,9 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, Clear},
     ExecutableCommand,
 };
+use log::LevelFilter;
 use ringbuf::traits::{Consumer, Producer, Split};
+use simplelog::{Config, WriteLogger};
 
 const SAMPLE_RATE: SampleRate = SampleRate(48_000);
 
@@ -261,6 +264,12 @@ fn cleanup() {
 }
 
 fn main() -> std::io::Result<()> {
+    let _ = WriteLogger::init(
+        LevelFilter::Info,
+        Config::default(),
+        File::create("my_rust_bin.log").unwrap(),
+    );
+
     stdout().execute(Clear(crossterm::terminal::ClearType::FromCursorDown))?;
     let mut ctx = TuiContext {
         user_input: vec![],
@@ -294,7 +303,7 @@ fn main() -> std::io::Result<()> {
     stdout().execute(Print(format!("{}", chosen_channel + 1) + "\n"))?;
 
     // DO TUNING NOW PLEASE
-    run_tuner(chosen_device, chosen_channel, total_channel_count);
+    run_tuner(chosen_device, chosen_channel, total_channel_count)?;
 
     cleanup();
     Ok(())
@@ -315,23 +324,150 @@ fn run_tuner(
 
     let rb = ringbuf::HeapRb::<f32>::new(BUFFER_SIZE);
     let (mut tx, mut rx) = rb.split();
+    let mut local_buf = [0.; BUFFER_SIZE];
 
-    let input_stream = chosen_device
+    let num_channels = total_channel_count as usize;
+
+    let _input_stream = chosen_device
         .build_input_stream(
             &stream_config,
             move |data: &[f32], _| {
                 let mut buf = [0.; BUFFER_SIZE];
-                for i in 0..total_channel_count as usize {
-                    for j in 0..BUFFER_SIZE {
-                        buf[j] = data[j * total_channel_count as usize + i];
+                for _ in 0..num_channels {
+                    for samp in 0..BUFFER_SIZE {
+                        buf[samp] = data[samp * num_channels + chosen_channel];
                         tx.push_slice(&buf);
                     }
                 }
             },
-            move |err| {},
+            move |err| println!("{}", err),
             None,
         )
         .unwrap();
+
+    let pitch_windows: Vec<_> = {
+        let reference: f32 = 440.;
+        let pitch_names = [
+            "A", "A#/Bb", "B", "C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab",
+        ];
+
+        (0i32..9)
+            .flat_map(|octave| {
+                (0..12usize).map(move |note| {
+                    let semitones_from_a4 = (octave - 4) * 12 + (note as i32);
+                    let freq = reference * (2.0f32.powf(semitones_from_a4 as f32 / 12.0));
+                    let lower = reference * (2.0f32.powf((semitones_from_a4 - 1) as f32 / 12.0));
+                    let upper = reference * (2.0f32.powf((semitones_from_a4 + 1) as f32 / 12.0));
+                    let low = lower + (freq - lower) / 2.0;
+                    let high = freq + (upper - freq) / 2.0;
+                    (low, freq, high, pitch_names[note].to_owned())
+                })
+            })
+            .collect()
+    };
+
+    log::info!("{:?}", pitch_windows);
+
+    stdout().execute(Print("\n\n"))?;
+    let (_, r) = cursor::position()?;
+    stdout().execute(Hide)?;
+    loop {
+        rx.pop_slice(&mut local_buf);
+        // now it's time to do processing on the buffer
+
+        // estimate the pitch
+        let estimated_pitch: f32 = estimate_pitch(&local_buf);
+        draw_tuner(estimated_pitch, &pitch_windows)?;
+        stdout().execute(MoveTo(0, r - 2))?;
+
+        thread::sleep(Duration::from_millis(30));
+    }
+
+    stdout().execute(Show)?;
+    Ok(())
+}
+
+fn estimate_pitch(buf: &[f32; 512]) -> f32 {
+    const BUFFER_SIZE: usize = 512;
+    const SAMPLE_RATE: usize = 48_000;
+    let mut acf = [0.; BUFFER_SIZE];
+    let mut mx: f32 = 0.;
+    for tau in 0..BUFFER_SIZE {
+        acf[tau] = {
+            let mut s: f32 = 0.;
+            for j in 0..BUFFER_SIZE - tau {
+                s += buf[j] * buf[j + tau];
+            }
+            mx = mx.max(s);
+            s
+        };
+    }
+    let mut first_peak = 0;
+    for i in 1..BUFFER_SIZE - 1 {
+        if acf[i] > 0.0 && acf[i - 1] < acf[i] && acf[i] > acf[i + 1] {
+            first_peak = i;
+            break;
+        }
+    }
+    let ms_per_samp: f32 = 1000. / SAMPLE_RATE as f32;
+    let first_peak_time = first_peak as f32 * ms_per_samp;
+    return 1000. / first_peak_time;
+}
+
+fn draw_tuner(
+    estimated_pitch: f32,
+    pitch_windows: &Vec<(f32, f32, f32, String)>,
+) -> std::io::Result<()> {
+    const WIDTH: usize = 24;
+
+    let Some(window) = pitch_windows
+        .iter()
+        .find(|(l, _m, h, nn)| estimated_pitch > *l && estimated_pitch < *h)
+    else {
+        return Ok(());
+    };
+
+    let (low, actual, high, note_name) = window.clone();
+    let lower_window_width = actual - low;
+    let upper_window_width = high - actual;
+
+    enum Pos {
+        Lower,
+        Middle,
+        Upper,
+    }
+
+    let pos = if estimated_pitch == actual {
+        Pos::Middle
+    } else if estimated_pitch < actual {
+        Pos::Lower
+    } else {
+        Pos::Upper
+    };
+
+    let pos_t = match pos {
+        Pos::Lower => (estimated_pitch - low) / lower_window_width,
+        Pos::Middle => 0.,
+        Pos::Upper => (estimated_pitch - actual) / upper_window_width,
+    };
+
+    let half_width = WIDTH / 2;
+    let idx = (pos_t * half_width as f32).floor() as usize
+        + match pos {
+            Pos::Upper => half_width,
+            _ => 0,
+        };
+
+    let mut bar_chars = ['_'; WIDTH];
+    bar_chars[idx] = '|';
+
+    let s: String = bar_chars.iter().collect();
+    stdout().execute(Clear(FromCursorDown))?;
+    stdout().execute(Print(format!(
+        "{: <8} {: ^8} {: >8} | {}\n",
+        low, estimated_pitch, high, note_name
+    )))?;
+    stdout().execute(Print(s))?;
 
     Ok(())
 }
