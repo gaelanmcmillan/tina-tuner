@@ -9,10 +9,10 @@ A tiny chromatic tuner for the command line.
 ```
 ~ tina
 -: tina tuner v1.0 :-
-
-please select an audio source (2 sources available)
-(1) Built-in Audio
-(2) Babyface
+please select an audio input device
+- (0) airdrop cute doggy only Microphone
+- (1) BlackHole 2ch
+- (2) MacBook Pro Microphone
 
 >>> 2
 ```
@@ -20,11 +20,9 @@ please select an audio source (2 sources available)
 ### select a channel
 
 ```
-please select a channel (4 channels available)
-(1) |           | (-inf db) (-inf db)
-(2) |-----o   | | (-4   db) (-12  db)
-(3) |           | (-inf db) (-inf db)
-(4) |           | (-inf db) (-inf db)
+selected device: MacBook Pro Microphone
+please select a channel
+- (0) channel #1 — |--o m        | -48.5 (max: -43.1)
 
 >>> 2
 ```

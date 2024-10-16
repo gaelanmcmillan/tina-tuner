@@ -1,6 +1,8 @@
 use core::f32;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{stdin, stdout, Write};
+use std::mem::MaybeUninit;
 use std::process::exit;
 use std::thread;
 use std::time::Duration;
@@ -24,7 +26,9 @@ use crossterm::{
     ExecutableCommand,
 };
 use log::LevelFilter;
-use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::storage::{Owning, Slice};
+use ringbuf::traits::{Consumer, Producer, RingBuffer, Split};
+use ringbuf::LocalRb;
 use simplelog::{Config, WriteLogger};
 
 const SAMPLE_RATE: SampleRate = SampleRate(48_000);
@@ -267,7 +271,7 @@ fn main() -> std::io::Result<()> {
     let _ = WriteLogger::init(
         LevelFilter::Info,
         Config::default(),
-        File::create("my_rust_bin.log").unwrap(),
+        File::create("log.txt").unwrap(),
     );
 
     stdout().execute(Clear(crossterm::terminal::ClearType::FromCursorDown))?;
@@ -371,6 +375,7 @@ fn run_tuner(
     stdout().execute(Print("\n\n"))?;
     let (_, r) = cursor::position()?;
     stdout().execute(Hide)?;
+
     loop {
         rx.pop_slice(&mut local_buf);
         // now it's time to do processing on the buffer
@@ -383,7 +388,6 @@ fn run_tuner(
         thread::sleep(Duration::from_millis(30));
     }
 
-    stdout().execute(Show)?;
     Ok(())
 }
 
@@ -414,11 +418,52 @@ fn estimate_pitch(buf: &[f32; 512]) -> f32 {
     return 1000. / first_peak_time;
 }
 
+fn make_truncated_string(float: f32) -> String {
+    format!("{:.4}", float)
+}
+
+fn get_float_from_truncated_string(s: String) -> f32 {
+    s.parse().unwrap()
+}
+
+struct Tuner {
+    history_buffer: LocalRb<Owning<[MaybeUninit<f32>; 10]>>,
+    history_counts: HashMap<String, usize>,
+    time_on_correct_pitch: f32,
+    best_guess_count: usize,
+    best_guess: Option<f32>,
+}
+
+impl Tuner {
+    fn update(&mut self, estimated_pitch: f32) {
+        // increment count of the new estimation
+        let s = make_truncated_string(estimated_pitch);
+        *self.history_counts.entry(s).or_insert(0) += 1;
+
+        // handle the overwriting case
+        if let Some(to_remove) = self.history_buffer.push_overwrite(estimated_pitch) {
+            let s = make_truncated_string(to_remove);
+            // dec count of removed number, or remove if 0
+            if let Some(count) = self.history_counts.get_mut(&s) {
+                if *count == 1 {
+                    self.history_counts.remove(&s);
+                } else {
+                    *count -= 1;
+                }
+            };
+        };
+
+        // update best case
+    }
+
+    fn draw(&self) {}
+}
+
 fn draw_tuner(
     estimated_pitch: f32,
     pitch_windows: &Vec<(f32, f32, f32, String)>,
 ) -> std::io::Result<()> {
-    const WIDTH: usize = 24;
+    const WIDTH: usize = 25;
 
     let Some(window) = pitch_windows
         .iter()
@@ -458,15 +503,16 @@ fn draw_tuner(
             _ => 0,
         };
 
-    let mut bar_chars = ['_'; WIDTH];
-    bar_chars[idx] = '|';
+    let mut bar_chars = ['-'; WIDTH];
+    bar_chars[0] = '|';
+    bar_chars[WIDTH - 1] = '|';
+    bar_chars[WIDTH / 2 - 1] = '(';
+    bar_chars[WIDTH / 2 + 1] = ')';
+    bar_chars[idx] = 'o';
 
     let s: String = bar_chars.iter().collect();
     stdout().execute(Clear(FromCursorDown))?;
-    stdout().execute(Print(format!(
-        "{: <8} {: ^8} {: >8} | {}\n",
-        low, estimated_pitch, high, note_name
-    )))?;
+    stdout().execute(Print(format!("{:^25}\n", note_name)))?;
     stdout().execute(Print(s))?;
 
     Ok(())
